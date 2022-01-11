@@ -1,4 +1,5 @@
 # Basic
+import sys
 import numpy as np
 from typing import List
 from collections import namedtuple
@@ -6,6 +7,13 @@ from collections import namedtuple
 # Torch utils
 import torch
 import torch.nn as nn
+
+import logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(levelname)s %(message)s",
+    datefmt="%d/%b/%Y %H:%M:%S",
+    stream=sys.stdout)
 
 Parameter = namedtuple('Parameter', ['size', 'bits'],
                        defaults=[np.asarray((0, 0)), 32])
@@ -33,11 +41,14 @@ class SizeEstimator(object):
 
     def _get_parameter_sizes(self) -> List[Parameter]:
         """
-        Get sizes of all parameters in `model`
+        Get sizes of all parameters in `model`.
+        Note: estimates only those layers that are included in model.modules().
+        For example, use of nn.Functional.max_pool2d in the forward() method of a model prevents SizeEstimator from functioning properly. There is no direct means to access dimensionality changes carried out by arbitrary functions in the forward() method, such that tracking the size of inputs and gradients to be stored is non-trivial for such models.
         """
         sizes = []
         modules = list(self._model.modules())[1:]
         for i, module in enumerate(modules):
+            # todo: handle torch.nn.ModuleDict!
             if isinstance(module, nn.ModuleList):
                 # To not to estimate inner sub-modules twice!
                 continue
@@ -51,14 +62,27 @@ class SizeEstimator(object):
         """
         Run sample input through each layer to get output sizes
         """
-        input_ = torch.Tensor(torch.FloatTensor(*self._input_size), volatile=True)
+        input_ = torch.FloatTensor(*self._input_size).requires_grad_(False)
         modules = list(self._model.modules())[1:]
         out_sizes = []
         for i, module in enumerate(modules):
-            out = module(input_)
-            out_sizes.append(Parameter(size=np.asarray(out.size()),
-                                       bits=self.__get_parameter_bits(out)))
-            input_ = out
+            logging.info(f"Layer #{i}: {module}")
+            # todo: handle torch.nn.ModuleDict!
+            if isinstance(module, nn.ModuleList):
+                for j, inner_module in enumerate(module):
+                    logging.info(f"\tInner Layer #{j}: {inner_module}")
+                    out = inner_module(input_)
+                    logging.info(f"\t In: {input_.size()}, out: {out.size()}")
+                    out_sizes.append(Parameter(size=np.asarray(out.size()),
+                                               bits=self.__get_parameter_bits(out)))
+                    input_ = out
+            else:
+                logging.info(f"In: {input_.size()}")
+                out = module(input_)
+                logging.info(f"Out: {out.size()}")
+                out_sizes.append(Parameter(size=np.asarray(out.size()),
+                                           bits=self.__get_parameter_bits(out)))
+                input_ = out
         return out_sizes
 
     def _calculate_parameters_weight(self) -> float:
@@ -92,14 +116,14 @@ class SizeEstimator(object):
         """
         Calculate bits to store forward and backward pass
         """
-        total_bits = 0
+        total_bits = []
         for out in self._output_sizes:
             # forward pass
             f_bits = np.prod(out.size) * out.bits
-            total_bits += f_bits
+            total_bits.append(f_bits)
 
         # Multiply by 2 for both forward and backward
-        return total_bits * 2
+        return np.asarray(total_bits, dtype=np.float64).sum() * 2  # Cause overflow: total_bits * 2
 
     def _calculate_input_weight(self) -> float:
         """
