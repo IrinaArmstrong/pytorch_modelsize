@@ -66,20 +66,11 @@ class SizeEstimator(object):
         modules = list(self._model.modules())[1:]
         out_sizes = []
         for i, module in enumerate(modules):
-            logging.info(f"Layer #{i}: {module}")
             # todo: handle torch.nn.ModuleDict!
             if isinstance(module, nn.ModuleList):
-                for j, inner_module in enumerate(module):
-                    logging.info(f"\tInner Layer #{j}: {inner_module}")
-                    out = inner_module(input_)
-                    logging.info(f"\t In: {input_.size()}, out: {out.size()}")
-                    out_sizes.append(Parameter(size=np.asarray(out.size()),
-                                               bits=self.__get_parameter_bits(out)))
-                    input_ = out
+                continue
             else:
-                logging.info(f"In: {input_.size()}")
                 out = module(input_)
-                logging.info(f"Out: {out.size()}")
                 out_sizes.append(Parameter(size=np.asarray(out.size()),
                                            bits=self.__get_parameter_bits(out)))
                 input_ = out
@@ -109,7 +100,7 @@ class SizeEstimator(object):
         elif param.dtype == torch.float64:
             return 64
         else:
-            print(f"Current version estimated only sizes of floating points parameters!")
+            logging.error(f"Current version estimated only sizes of floating points parameters!")
             return 32
 
     def _calculate_forward_backward_weight(self) -> float:
@@ -138,5 +129,5 @@ class SizeEstimator(object):
         total = self._input_weight + self._parameters_bits + self._forward_backward_bits
         total_bytes = (total / 8)
         total_megabytes = total_bytes / (1024**2)
-        print(f"Model size is: {total} bits, {total_bytes} bytes, {total_megabytes} Mb.")
+        logging.info(f"Model size is: {total} bits, {total_bytes} bytes, {total_megabytes} Mb.")
         return total_megabytes
