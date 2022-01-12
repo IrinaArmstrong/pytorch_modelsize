@@ -1,17 +1,23 @@
 # Basic
+import sys
 import unittest
-import logging
-
 
 # Torch utils
 import torch
 import torch.nn as nn
-from torch.autograd import Variable
+
+import logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(levelname)s %(message)s",
+    datefmt="%d/%b/%Y %H:%M:%S",
+    stream=sys.stdout)
 
 import warnings
 warnings.simplefilter('ignore')
 
 from pytorch_modelsize import SizeEstimator
+
 
 class TestSizeEstimator(unittest.TestCase):
 
@@ -36,9 +42,11 @@ class TestSizeEstimator(unittest.TestCase):
 
         nested_model = NestedModel(inputSize=200, numLayers=8, nodesPerLayer=128)
         sample_input = torch.FloatTensor(64, 100, 200)
-        print(nested_model)
+        logging.info(nested_model)
 
-        self.assertEqual(True, False)  # add assertion here
+        estimator = SizeEstimator(nested_model, input_size=sample_input.size())
+        total_size = estimator.estimate_total_size()
+        logging.info(f"\nTotal: {total_size}")
 
 
 if __name__ == '__main__':

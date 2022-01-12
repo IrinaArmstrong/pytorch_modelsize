@@ -22,28 +22,65 @@ Parameter = namedtuple('Parameter', ['size', 'bits'],
 class SizeEstimator(object):
 
     def __init__(self, model: nn.Module, input_size: List[int],
-                 input_n_bits: int = 32):
+                 input_n_bits: int = 32, cuda_is_available: bool = False):
         """
-        Estimates the size of PyTorch models in memory
-        for a given input size and data precision, measured in bits.
+        Estimates the size of PyTorch models in memory for a given input size and data precision, measured in bits.
         So default input type of torch.float32 equals to 32 bits precision.
+        ---
+        As a special option, you can estimate the amount of memory occupied on the graphics accelerator (CUDA),
+        if such is available.
+        ! Note: In this case SizeEstimator monitors only memory occupied by tensors,
+        not all memory slots that are used by caching memory allocator in PyTorch.
         """
         self._model = model
         self._input_size = input_size
         self._input_n_bits = input_n_bits
+        # Note: current version of SizeEstimator works only with models which are stored on CPU
+        # for GPU size estimation call `estimate_cuda_memory_usage()`
+        self._model_on_cuda = False
+        self._model_init_device_id = None
 
         # Calculate
+        self.__check_device()
         self._parameters_sizes = self._get_parameter_sizes()
         self._output_sizes = self._get_output_sizes()
         self._parameters_bits = self._calculate_parameters_weight()
         self._forward_backward_bits = self._calculate_forward_backward_weight()
         self._input_weight = self._calculate_input_weight()
+        self.__restore_device()
+
+    def __check_device(self):
+        """
+        SizeEstimator works only with models which are stored on CPU, so if networks is allocated in CUDA memory,
+        it will be temporary re-allocated on CPU.
+        """
+        params_device = all([param.get_device() == -1 for param in self._model.parameters()])
+        if not params_device:  # some of model's parameters tensors resides on GPU
+            self._model_on_cuda = True
+            # select first device id, if model is allocated on multiple GPU's,
+            # after size estimation it will be placed on single one (actually, random one)
+            self._model_init_device_id = np.unique([param.get_device() for param in self._model.parameters()
+                                                    if param.get_device() != -1])[0]
+            self._model.to('cpu'),
+            logging.info(f"Model was allocated on CUDA id #{self._model_init_device_id}, moved to CPU.")
+
+    def __restore_device(self):
+        """
+        Restoring the location of the model (on the CUDA) after its temporary transfer to the CPU.
+        """
+        if self._model_on_cuda and (self._model_init_device_id is not None):
+            self._model.cuda(device=self._model_init_device_id)
+            logging.info(f"Model transferred to CUDA id #{self._model_init_device_id}.")
 
     def _get_parameter_sizes(self) -> List[Parameter]:
         """
         Get sizes of all parameters in `model`.
         Note: estimates only those layers that are included in model.modules().
-        For example, use of nn.Functional.max_pool2d in the forward() method of a model prevents SizeEstimator from functioning properly. There is no direct means to access dimensionality changes carried out by arbitrary functions in the forward() method, such that tracking the size of inputs and gradients to be stored is non-trivial for such models.
+        For example, use of nn.Functional.max_pool2d in the forward() method of a model prevents
+        SizeEstimator from functioning properly.
+        There is no direct means to access dimensionality changes
+        carried out by arbitrary functions in the forward() method,
+        such that tracking the size of inputs and gradients to be stored is non-trivial for such models.
         """
         sizes = []
         modules = list(self._model.modules())[1:]
@@ -124,10 +161,26 @@ class SizeEstimator(object):
 
     def estimate_total_size(self) -> float:
         """
-        Estimate model size in memory in megabytes and bits.
+        Estimate total model size in memory in megabytes and bits.
+        There are three main components which total size need to be estimated in memory during model training:
+            * Model parameters: the actual weights in network;
+            * Input: the input itself has to be estimated too (in case to not overflow GPU memory for example);
+            * Intermediate variables: intermediate variables passed between layers, both the values and gradients;
+        Therefore, this method returns total size of network (in Mb.) as sum of those three components.
         """
         total = self._input_weight + self._parameters_bits + self._forward_backward_bits
         total_bytes = (total / 8)
         total_megabytes = total_bytes / (1024**2)
         logging.info(f"Model size is: {total} bits, {total_bytes} bytes, {total_megabytes} Mb.")
         return total_megabytes
+
+    def estimate_weights_size(self) -> float:
+        """
+        Estimate ONLY model weights size in memory in megabytes and bits.
+        """
+        total = self._input_weight
+        total_bytes = (total / 8)
+        total_megabytes = total_bytes / (1024 ** 2)
+        logging.info(f"Model size is: {total} bits, {total_bytes} bytes, {total_megabytes} Mb.")
+        return total_megabytes
+
